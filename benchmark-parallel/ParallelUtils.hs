@@ -9,6 +9,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE LambdaCase #-}
 
 module ParallelUtils where
 
@@ -63,7 +64,7 @@ import Cardano.Marketplace.Common.ConsoleWritable (ConsoleWritable (toConsoleTex
 import Cardano.Marketplace.V1.Core (buyToken, marketAddressShelley, placeOnMarket)
 import Cardano.Marketplace.V1.RequestModels
 import Cardano.Marketplace.V1.ServerRuntimeContext (RuntimeContext (..), resolveContext)
-import Control.Concurrent (MVar, newMVar, putMVar, takeMVar, threadDelay, withMVar, readMVar)
+import Control.Concurrent (MVar, newMVar, putMVar, takeMVar, threadDelay, withMVar, readMVar, tryReadMVar)
 import Control.Exception (SomeException (SomeException), try)
 import Control.Monad (foldM, forM, forM_)
 import Control.Monad.Reader (MonadIO (liftIO), ReaderT (runReaderT))
@@ -452,17 +453,16 @@ watchMarketForTxId txId index atomicPutStrLn atomicPutStr marketState@(MarketUTx
   atomicPutStrLn $ "Waiting for txId" ++ show txId
 
   let txIn = TxIn txId (TxIx 0)
-
-  utxo@(UTxO utxoMap) <- readMVar m
-  -- putMVar m utxo
-  atomicPutStrLn $ "Size of map " ++ show (Map.size utxoMap) ++ show (renderTxIn txIn)
-  let isTxIdPresent =  Map.member txIn utxoMap
- 
-  if isTxIdPresent
-    then do
-      atomicPutStrLn $ "\nTxId " <> show txId <> " found on market " <> show index
-    else do
-      watchMarketForTxId txId index atomicPutStrLn atomicPutStr marketState
+  tryReadMVar m >>= \case 
+    Nothing -> watchMarketForTxId txId index atomicPutStrLn atomicPutStr marketState
+    Just utxo@(UTxO utxoMap) -> do
+      atomicPutStrLn $ "Size of map " ++ show (Map.size utxoMap) ++ show (renderTxIn txIn)
+      let isTxIdPresent =  Map.member txIn utxoMap
+      if isTxIdPresent
+        then do
+          atomicPutStrLn $ "\nTxId " <> show txId <> " found on market " <> show index
+        else do
+          watchMarketForTxId txId index atomicPutStrLn atomicPutStr marketState
 
 loopedQueryUtxos :: ChainInfo v => v -> AddressAny -> IO (UTxO AlonzoEra)
 loopedQueryUtxos ctx addrAny = do
@@ -522,15 +522,14 @@ pollForTxId' ctx addrAny txHash atomicPutStrLn atomicQueryUtxos = do
 --     else pollForTxIdAndValue ctx addrAny txId checkValue
 
 -- Poll for txId to appear in new utxos list each second
-pollForTxIdAtomic ctx addrAny txHash index atomicPutStrLn atomicPutStr = do
-  randomDealy <- randomRIO (1_000_000, 3_000_000) :: IO Int
-  threadDelay randomDealy
-  utxos@(UTxO utxoMap) <- loopedQueryUtxos ctx addrAny
-  atomicPutStr "."
+pollForTxIdAtomic ctx addrAny txHash atomicQueryUtxos = do
+  threadDelay 1_000_000
+  utxos@(UTxO utxoMap) <- atomicQueryUtxos addrAny
+  putStr "."
   let txIdsKey = map (\(TxIn txId _) -> txId) $ Map.keys utxoMap
   if txHash `elem` txIdsKey
-    then atomicPutStrLn ("\nFunds Transferred successfully. For Wallet Set " ++ show index)
-    else pollForTxIdAtomic ctx addrAny txHash index atomicPutStrLn atomicPutStr
+    then putStrLn "\nFunds Transferred successfully. For Wallet Set "
+    else pollForTxIdAtomic ctx addrAny txHash atomicQueryUtxos
 
 --Poll for Tx id and value to be correctly appear
 -- pollForTxIdAndValueAtomic ctx addrAny txId checkValue atomicPutStrLn atomicPutStr = do
@@ -605,7 +604,7 @@ updateMarketUTxO utxo (MarketUTxOState m) = do
 
 -- lookupTxInInMarketUTxO :: MarketUTxOState -> TxIn -> IO Bool
 -- lookupTxInInMarketUTxO (MarketUTxOState m) txIn atomicPutStrLn = do
-  
+
 --   utxo@(UTxO utxoMap) <- readMVar m
 --   atomicPutStrLn $ "Size of map " ++ show (Map.size utxoMap) ++ show (renderTxIn txIn)
 --   -- printUtxosMap utxoMap
@@ -623,34 +622,34 @@ updateMarketUTxO utxo (MarketUTxOState m) = do
 
 pollMarketUtxos ctx marketAddrAny marketState atomicQueryUtxos atomicPutStrLn= do
   threadDelay 2000000
-  utxo <- atomicQueryUtxos marketAddrAny
+  utxo <- loopedQueryUtxos ctx marketAddrAny
   printUtxosWithoutTotal utxo marketAddrAny atomicPutStrLn
   updateMarketUTxO utxo marketState
   pollMarketUtxos ctx marketAddrAny marketState atomicQueryUtxos atomicPutStrLn
 
 
-splitUtxosOfWallets ctx wallets = do
+splitUtxosOfWallets ctx wallets atomicQueryUtxos= do
   forConcurrently_ wallets $ \wallet -> do
     let addrEra = getAddrEraFromSignKey ctx wallet
         addrAny = getAddrAnyFromEra addrEra
     utxos@(UTxO utxoMap) <- getUtxosOfWallet ctx wallet
     -- Get utxos having less than 2 ada
-    let utxosLessThan4Ada = Map.filter (\(TxOut _ (TxOutValue _ value) _) -> valueLte value (lovelaceToValue $ Lovelace 4_000_000)) utxoMap
+    -- let utxosLessThan4Ada = Map.filter (\(TxOut _ (TxOutValue _ value) _) -> valueLte value (lovelaceToValue $ Lovelace 4_000_000)) utxoMap
     -- printUtxosMap utxosLessThan4Ada
-    splitUtxos ctx utxos wallet addrEra addrAny
+    splitUtxos ctx utxos wallet addrEra addrAny atomicQueryUtxos
 
-splitUtxos ctx utxos signKey addrEra addrAny = do
+splitUtxos ctx utxos signKey addrEra addrAny atomicQueryUtxos = do
   let balance = utxoSum utxos
   let Quantity lovelaceQuantitySum = foldMap snd $ valueToList balance
-  let noOfSplits = lovelaceQuantitySum `div` 1_000_000 `div` 5
+  let noOfSplits = lovelaceQuantitySum `div` 5_000_000
   let splitValue = lovelaceToValue $ Lovelace 5_000_000
       payOperations = foldMap (\_->txPayTo addrEra splitValue) [1 .. noOfSplits-1]
       txOperations = payOperations
           <> txConsumeUtxos utxos
           <> txWalletAddress addrEra
 
-  print noOfSplits
-  printTxBuilder txOperations
+  -- print noOfSplits
+  -- printTxBuilder txOperations
 
   txBodyE <- loopedTxBuilderToTxBodyIo txOperations
   txBody <- case txBodyE of
@@ -661,7 +660,7 @@ splitUtxos ctx utxos signKey addrEra addrAny = do
   tx <- loopedSubmitTx txBody
   let txId = getTxId txBody
   putStrLn $ "Wait split utxos to appear on wallet TxId: " ++ show txId
-  -- pollForTxId ctx addrAny txId
+  -- pollForTxIdAtomic ctx addrAny txId atomicQueryUtxos
   -- putStrLn "Wallet utxo split completed."
 
   where
