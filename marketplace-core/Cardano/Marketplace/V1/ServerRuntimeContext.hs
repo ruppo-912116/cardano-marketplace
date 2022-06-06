@@ -63,9 +63,8 @@ populateTestnetConfig =do
     \}"
   setEnv "TREASURY_ADDRESS" "addr_test1vzz6kpfgav34rzycphlnsuzfh8cyc094kl8s5wapyrqv7yghmdkuf"
 
-resolveContext::  IO ( Either [ErrorMessage] RuntimeContext)
-resolveContext = do
-  context <- chainInfoFromEnv  >>=withDetails
+resolveContext::  DetailedChainInfo -> IO ( Either [ErrorMessage] RuntimeContext)
+resolveContext context = do
   if getNetworkId context /= Mainnet then populateTestnetConfig else pure ()
   marketOperatorAddrEither  <- resolveEnv $ createEnvConfigNoDefault addressParser "MARKET_OPERATOR_ADDR"
   marketOperatorSkeyEither  <- resolveEnv $ createSecretConfigNoDefault  (parseSignKey . T.pack) "MARKET_OPERATOR_SKEY"
@@ -93,7 +92,7 @@ resolveContext = do
                   ,   mOperator         = operatorpkh
                   ,   mPrimarySaleFee   = primarySaleFee
                   ,   mSecondarySaleFee = 2_500_000
-                  ,   mVersion          = 11
+                  ,   mVersion          = 19
                   }
       pure $ Right $ RuntimeContext{
                           runtimeContextCardanoConn = context,
