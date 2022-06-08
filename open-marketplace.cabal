@@ -40,8 +40,6 @@ library marketplace-core
   exposed-modules:
     Cardano.Marketplace.Cli
     Cardano.Marketplace.V1.Core
-    Cardano.Marketplace.V1.RequestModels
-    Cardano.Marketplace.V1.ServerRuntimeContext
     Cardano.Marketplace.Common.ConsoleWritable
     Cardano.Marketplace.Common.TextUtils
   hs-source-dirs: marketplace-core
