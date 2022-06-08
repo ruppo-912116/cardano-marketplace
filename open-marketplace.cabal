@@ -23,8 +23,7 @@ maintainer:         Sireto
 
 library marketplace-plutus
   exposed-modules:
-    Plutus.Contracts.V1.Marketplace
-    Plutus.Contracts.V1.Auction
+    Plutus.Contracts.V1.SimpleMarketplace
   hs-source-dirs: marketplace-plutus
   build-depends:
       base  -any
@@ -40,7 +39,6 @@ library marketplace-plutus
 library marketplace-core
   exposed-modules:
     Cardano.Marketplace.Cli
-    Cardano.Marketplace.Server
     Cardano.Marketplace.V1.Core
     Cardano.Marketplace.V1.RequestModels
     Cardano.Marketplace.V1.ServerRuntimeContext
@@ -68,21 +66,14 @@ library marketplace-core
     , cardano-ledger-alonzo
     , plutus-ledger-api
     , plutus-tx
-    , servant
-    , servant-server
-    , servant-errors
-    , servant-exceptions
-    , wai
-    , servant-exceptions-server
-    , warp
     , cborg
     , cardano-binary
     , mtl
     , kuber
 
-executable  marketplace-app
+executable  market-cli
   main-is:  Main.hs
-  hs-source-dirs: marketplace-app
+  hs-source-dirs: marketplace-cli
   build-depends:
       base -any
     , marketplace-core
