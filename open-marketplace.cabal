@@ -42,6 +42,7 @@ library marketplace-core
     Cardano.Marketplace.V1.Core
     Cardano.Marketplace.Common.ConsoleWritable
     Cardano.Marketplace.Common.TextUtils
+    Cardano.Marketplace.Common.TransactionUtils
   hs-source-dirs: marketplace-core
   build-depends:
       base -any

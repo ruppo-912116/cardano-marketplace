@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -18,9 +17,8 @@ import Cardano.Ledger.Alonzo.Tx (TxBody (txfee))
 import qualified Cardano.Ledger.BaseTypes as Shelley (Network (..))
 import Cardano.Marketplace.Common.ConsoleWritable
 import Cardano.Marketplace.Common.TextUtils
+import Cardano.Marketplace.Common.TransactionUtils
 import Cardano.Marketplace.V1.Core
-import Cardano.Marketplace.V1.RequestModels
-import Cardano.Marketplace.V1.ServerRuntimeContext
 import Codec.Serialise (serialise)
 import Control.Exception (throwIO)
 import Control.Monad (void)
@@ -82,12 +80,14 @@ runCli = do
           Buy
             { txin = "" &= typ "TxIn" &= argPos 0,
               datum = "" &= typ "Datum" &= argPos 1
-            } &= details ["Buy an asset on sale after finiding out txIn from market-cli ls.", "  Eg. buy '8932e54402bd3658a6d529da707ab367982ae4cde1742166769e4f94#0' '{\"fields\":...}'"],
+            }
+            &= details ["Buy an asset on sale after finiding out txIn from market-cli ls.", "  Eg. buy '8932e54402bd3658a6d529da707ab367982ae4cde1742166769e4f94#0' '{\"fields\":...}'"],
           Ls &= help "List utxos for market",
           Withdraw
             { txin = "" &= typ "TxIn" &= argPos 0,
               datum = "" &= typ "Datum" &= argPos 1
-            } &= details ["Withdraw an asset on sale after finiding out txIn from market-cli ls.", "  Eg. withdraw '8932e54402bd3658a6d529da707ab367982ae4cde1742166769e4f94#0' '{\"fields\":...}'"],
+            }
+            &= details ["Withdraw an asset on sale after finiding out txIn from market-cli ls.", "  Eg. withdraw '8932e54402bd3658a6d529da707ab367982ae4cde1742166769e4f94#0' '{\"fields\":...}'"],
           Mint &= help "Mint a new asset",
           CreateCollateral &= help "Create a new collateral utxo."
         ]
@@ -104,89 +104,15 @@ runCli = do
       putStrLn $ toHexString scriptInCbor
     Sell itemStr cost -> do
       sKey <- getDefaultSignKey
-      let addrShelley = skeyToAddr sKey (getNetworkId ctx)
-          sellerAddrInEra = getAddrEraFromSignKey ctx sKey
-      item <- parseAssetNQuantity $ T.pack itemStr
-      let lockedValue = valueFromList [item, (AdaAssetId, 2_000_000)]
-          saleDatum = constructDatum addrShelley cost
-          txOperations =
-            txPayToScript (marketAddressInEra $ getNetworkId ctx) lockedValue (hashScriptData saleDatum)
-              <> txWalletAddress sellerAddrInEra
-      txBodyE <- txBuilderToTxBodyIO ctx txOperations
-      txBody <- case txBodyE of
-        Left err -> error $ "Error in creating transaction " ++ show err
-        Right txBody -> return txBody
-      tx <- signAndSubmitTxBody (getConnectInfo ctx) txBody [sKey]
-      putStrLn $ "Sale Transaction submitted sucessfully with transaction hash " ++ getTxIdFromTx tx
-
-      putStrLn "\nDatum to be used for buying :"
-      putStrLn (BS8.unpack $ toStrict $ Aeson.encode $ scriptDataToJsonDetailedSchema saleDatum)
-
-      putStrLn $ "\nMarket Address : " ++ T.unpack (serialiseAddress marketAddr)
-    Buy txInStr datum -> do
-      dcInfo <- withDetails ctx
-      let datumObj = unMaybe "Error : Invalid datum json string." $ Aeson.decode $ TL.encodeUtf8 $ TL.pack datum
-      scriptData <- scriptDataParser datumObj
-      let simpleSale@SimpleSale {sellerAddress, priceOfAsset} = unMaybe "Failed to convert datum to SimpleSale" $ Plutus.fromData $ toPlutusData scriptData
-      print scriptData
-      print simpleSale
-
+      sellToken ctx itemStr cost sKey marketAddr
+    Buy txInText datumStr -> do
       sKey <- getDefaultSignKey
-      txIn <- parseTxIn txInStr
-      UTxO uMap <- queryMarketUtxos ctx marketAddr
-
-      let txOut = unMaybe "Error couldn't find the given txin in market utxos." $ Map.lookup txIn uMap
-
-      if not $ matchesDatumhash (hashScriptData scriptData) txOut
-        then error "Error : The given txin doesn't match the datumhash of the datum."
-        else do
-          let nwId = getNetworkId ctx
-              buyerAddr = getAddrEraFromSignKey ctx sKey
-              sellerAddrInEra = plutusAddressToAddressInEra nwId sellerAddress
-              sellerPayOperation = txPayTo sellerAddrInEra (ensureMinAda sellerAddrInEra (lovelaceToValue $ Lovelace priceOfAsset) (dciProtocolParams dcInfo))
-              redeemUtxoOperation = txRedeemUtxo txIn txOut marketScriptToScriptInAnyLang scriptData (fromPlutusData $ Plutus.toData SMP.Buy)
-              txOperations =
-                sellerPayOperation
-                  <> redeemUtxoOperation
-                  <> txWalletAddress buyerAddr
-          txBodyE <- txBuilderToTxBodyIO dcInfo txOperations
-          txBody <- case txBodyE of
-            Left fe -> throwIO fe
-            Right txBody -> pure txBody
-          tx <- signAndSubmitTxBody (getConnectInfo ctx) txBody [sKey]
-          putStrLn $ "Buy Transaction submitted sucessfully with transaction hash " ++ getTxIdFromTx tx
-          putStrLn "Done"
-      where
-        matchesDatumhash sDataHash (TxOut _ (TxOutValue _ value) (TxOutDatumHash _ hash)) = hash == sDataHash
-        matchesDatumhash _ _ = False
-
-        hasAsset asset (TxOut _ (TxOutValue _ value) _) = selectAsset value asset > 0
-        hasAsset _ _ = False
-
-        marketScriptToScriptInAnyLang = ScriptInAnyLang (PlutusScriptLanguage PlutusScriptV1) (PlutusScript PlutusScriptV1 simpleMarketplacePlutus)
-
-        ensureMinAda :: AddressInEra AlonzoEra -> Value -> ProtocolParameters -> Value
-        ensureMinAda addr value pParams =
-          if diff > 0
-            then value <> lovelaceToValue diff
-            else value
-          where
-            diff = minLovelace - currentLovelace
-            minLovelace = calculateMinimumLovelace ShelleyBasedEraAlonzo addr value pParams
-            currentLovelace = selectLovelace value
-    Withdraw txIn datum -> do
-      -- skey <- getCurrentSkey
-      -- scriptData <- parseScriptData assetid
-      -- let modal = WithdrawReqModel{
-      --     withdrawDatum=scriptData,
-      --     withdrawUtxo=Nothing,
-      --     withdrawAddress=Nothing,
-      --     withdrawAsset=Nothing,
-      --     withdrawCollateral=Nothing
-      --   }
-      -- TxResponse tx datums <-withdrawCommand rCtx  modal
-      -- putStrLn $ "Submited Tx :"++ tail (init $ show $ getTxId $ getTxBody tx)
-      putStrLn "Done"
+      buyToken ctx txInText datumStr sKey marketAddr
+    Withdraw txInText datumStr -> do
+      --TODO
+      -- skey <- getDefaultSignKey
+      -- withdrawToken ctx  txInText datumStr sKey
+      putStrLn "Not implemented currently."
     Mint -> do
       skey <- getDefaultSignKey
       simpleMintTest ctx skey

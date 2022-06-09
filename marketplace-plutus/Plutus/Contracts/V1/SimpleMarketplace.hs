@@ -73,7 +73,7 @@ mkMarket  ds@SimpleSale{sellerAddress,priceOfAsset}  action ctx =
     Just pkh -> case  action of
         Buy       -> traceIfFalse "Multiple script inputs" (allScriptInputsCount  ctx == 1)  && 
                      traceIfFalse "Seller not paid" (assetClassValueOf   (valuePaidTo info pkh) adaAsset >= priceOfAsset)
-     --   Withdraw  -> traceIfFalse "Withdraw: Missing signatåure" ( txSignedBy  info pkh )
+        -- Withdraw  -> traceIfFalse "Withdraw: Missing signatåure" ( txSignedBy  info pkh )
     where
       sellerPkh= case sellerAddress of { Address cre m_sc -> case cre of
                                                            PubKeyCredential pkh -> Just pkh
